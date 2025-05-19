@@ -4,7 +4,6 @@ import requests
 from requests.exceptions import Timeout
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-import time
 import concurrent
 from concurrent.futures import ThreadPoolExecutor
 import pdfplumber
@@ -14,7 +13,8 @@ import string
 from typing import Optional, Tuple
 from nltk.tokenize import sent_tokenize
 from typing import List, Dict, Union
-from urllib.parse import urljoin
+import time
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
 import aiohttp
 import asyncio
 import chardet
@@ -23,6 +23,9 @@ import random
 
 # ----------------------- Set your WebParserClient URL -----------------------
 WebParserClient_url = None
+
+
+DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 
 
 # ----------------------- Custom Headers -----------------------
@@ -402,6 +405,9 @@ def extract_relevant_info(search_results):
         list: A list of dictionaries containing the extracted information.
     """
     useful_info = []
+
+    print("search results are: ")
+    print(search_results)
     
     if 'webPages' in search_results and 'value' in search_results['webPages']:
         for id, result in enumerate(search_results['webPages']['value']):
@@ -420,6 +426,180 @@ def extract_relevant_info(search_results):
     return useful_info
 
 
+
+
+def extract_relevant_info_ddg(search_results):
+    """
+    Extract relevant information from a list of search result dictionaries.
+
+    Args:
+        search_results (list): A list of dictionaries, where each dictionary
+                               represents a single search result.
+
+    Returns:
+        list: A list of dictionaries containing the extracted information.
+              Each dictionary will have the following keys:
+                'id': An integer ID for the search result.
+                'title': The title of the search result.
+                'url': The URL of the search result.
+                'site_name': The display URL of the website.
+                'date': The date of the search result (if available, otherwise '').
+                'snippet': A short summary or snippet of the search result.
+                'context': An empty string, reserved for potential future use.
+    """
+    useful_info = []
+
+    print("search results are: ")
+    print(search_results)
+
+    for id, result in enumerate(search_results):
+        info = {
+            'id': id + 1,  # Increment id for easier subsequent operations
+            'title': result.get('title', ''),
+            'url': result.get('url', ''),
+            'site_name': result.get('displayUrl', ''),
+            'date': '',  # Date is not directly available in this input format
+            'snippet': result.get('snippet', ''),  # Remove HTML tags
+            # Add context content to the information
+            'context': ''  # Reserved field to be filled later
+        }
+        useful_info.append(info)
+
+    return useful_info
+
+
+
+def duckduckgo_lite_search(query, timeout=10):
+    """
+    Perform a synchronous search using DuckDuckGo Lite and parse results.
+
+    Args:
+        query (str): Search query.
+        timeout (int): Request timeout in seconds.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary represents
+              a search result with keys 'title', 'url', 'snippet', 'displayUrl'.
+              Returns an empty list if no results are found or if the
+              request fails after retries.
+    """
+
+    # Encode the query for use in the URL
+    encoded_query = quote_plus(query)
+    url = f"{DDG_LITE_URL}?q={encoded_query}"
+
+    # Basic headers to mimic a browser request (optional but can sometimes help)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36'
+    }
+
+    max_retries = 5
+    retry_count = 0
+
+    while retry_count < max_retries:
+        try:
+            # Make the HTTP GET request
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+
+            # Parse the HTML content using BeautifulSoup
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            results = []
+
+            # Find all the main search result links. Based on the HTML, these are <a>
+            # tags with class 'result-link'.
+            # Each result block seems to be structured like:
+            # <tr><td>num.</td><td><a class='result-link'>...</a></td></tr>
+            # <tr><td>...</td><td class='result-snippet'>...</td></td></tr>
+            # <tr><td>...</td><td><span class='link-text'>...</span></td></tr>
+            # followed by a spacer <tr>
+
+            # Find all link elements that signify the start of a result block
+            result_links = soup.find_all('a', class_='result-link')
+
+            for link_tag in result_links:
+                try:
+                    title = link_tag.get_text(strip=True)
+                    raw_url = link_tag['href']
+
+                    # DuckDuckGo Lite uses redirect URLs like //duckduckgo.com/l/?uddg=...
+                    # We need to extract the actual URL from the 'uddg' parameter.
+                    actual_url = None
+                    if raw_url.startswith('//duckduckgo.com/l/'):
+                        # Prepend scheme if missing for urlparse
+                        if raw_url.startswith('//'):
+                            raw_url = 'https:' + raw_url
+
+                        parsed_ddg_url = urlparse(raw_url)
+                        query_params = parse_qs(parsed_ddg_url.query)
+                        uddg_urls = query_params.get('uddg')
+
+                        if uddg_urls and uddg_urls[0]:
+                            actual_url = unquote(uddg_urls[0]) # Decode the URL
+                        else:
+                            # Fallback: use the DDG redirect link if uddg not found
+                            actual_url = raw_url
+                    else:
+                         # Fallback: use the link as is if it's not the standard DDG redirect format
+                         actual_url = raw_url
+
+
+                    # Navigate the HTML structure relative to the link_tag
+                    # Go up to the <tr> parent of the link
+                    link_tr = link_tag.find_parent('tr')
+
+                    snippet = ""
+                    display_url = ""
+
+                    if link_tr:
+                        # Find the next <tr> sibling (should contain the snippet)
+                        snippet_tr = link_tr.find_next_sibling('tr')
+                        if snippet_tr:
+                            snippet_td = snippet_tr.find('td', class_='result-snippet')
+                            if snippet_td:
+                                snippet = snippet_td.get_text(strip=True)
+
+                            # Find the next <tr> sibling after the snippet_tr (should contain the display URL)
+                            display_tr = snippet_tr.find_next_sibling('tr')
+                            if display_tr:
+                                display_span = display_tr.find('span', class_='link-text')
+                                if display_span:
+                                    display_url = display_span.get_text(strip=True)
+
+
+                    results.append({
+                        'title': title,
+                        'url': actual_url,
+                        'snippet': snippet,
+                        'displayUrl': display_url
+                    })
+
+                except Exception as parse_error:
+                    # Print error for a specific result but continue processing others
+                    print(f"Error parsing individual result: {parse_error}")
+                    continue # Skip this potentially malformed result
+
+            # If we successfully parsed the page, return the results
+            return results
+
+        except requests.exceptions.RequestException as e:
+            # Handle request errors (network issues, timeouts, HTTP errors)
+            retry_count += 1
+            if retry_count == max_retries:
+                print(f"DuckDuckGo Lite Search Request Error occurred: {e} after {max_retries} retries")
+                return [] # Return empty list after max retries
+            print(f"DuckDuckGo Lite Search Request Error occurred, retrying ({retry_count}/{max_retries})...")
+            time.sleep(1)  # Wait before retrying
+
+        except Exception as e:
+            # Catch any other unexpected errors during parsing
+            print(f"An unexpected error occurred during parsing: {e}")
+            return [] # Return empty list for unexpected errors
+
+    # This part should technically not be reached if retries are handled,
+    # but serves as a final fallback.
+    return []
 
 
 async def bing_web_search_async(query, subscription_key, endpoint, market='en-US', language='en', timeout=20):

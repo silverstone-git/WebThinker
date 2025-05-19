@@ -1,0 +1,7 @@
+outputs/
+cache/
+scripts/evaluate/__pycache__
+scripts/prompts/__pycache__
+scripts/search/__pycache__
+scripts/utils/__pycache__
+runme

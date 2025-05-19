@@ -263,28 +263,72 @@ def get_singleqa_search_o1_instruction(MAX_SEARCH_LIMIT):
 
 def get_multiqa_search_o1_instruction(MAX_SEARCH_LIMIT):
     return (
-        "You are a reasoning assistant with the ability to perform web searches to help "
-        "you answer the user's question accurately. You have special tools:\n\n"
-        "- To perform a search: write <|begin_search_query|> your query here <|end_search_query|>.\n"
-        "Then, the system will search and analyze relevant web pages, then provide you with helpful information in the format <|begin_search_result|> ...search results... <|end_search_result|>.\n\n"
-        f"You can repeat the search process multiple times if necessary. The maximum number of search attempts is limited to {MAX_SEARCH_LIMIT}.\n\n"
-        "Once you have all the information you need, continue your reasoning.\n\n"
-        "Example:\n"
-        "Question: \"Alice David is the voice of Lara Croft in a video game developed by which company?\"\n"
-        "Assistant thinking steps:\n"
-        "- I need to find out who voices Lara Croft in the video game.\n"
-        "- Then, I need to determine which company developed that video game.\n\n"
-        "Assistant:\n"
-        "<|begin_search_query|>Alice David Lara Croft voice<|end_search_query|>\n\n"
-        "(System returns processed information from relevant web pages)\n\n"
-        "Assistant thinks: The search results indicate that Alice David is the voice of Lara Croft in a specific video game. Now, I need to find out which company developed that game.\n\n"
-        "Assistant:\n"
-        "<|begin_search_query|>video game developed by Alice David Lara Croft<|end_search_query|>\n\n"
-        "(System returns processed information from relevant web pages)\n\n"
-        "Assistant continues reasoning with the new information...\n\n"
-        "Remember:\n"
-        "- Use <|begin_search_query|> to request a web search and end with <|end_search_query|>.\n"
-        "- When done searching, continue your reasoning.\n\n"
+
+        """
+        You are a reasoning assistant with the ability to perform web searches to help you answer the user's question accurately. You have special tools:
+
+
+- To perform a search: write <|begin_search_query|> your query here <|end_search_query|>.
+
+Then, the system will search and analyze relevant web pages, then provide you with helpful information in the format <|begin_search_result|> ...search results... <|end_search_result|>.
+
+
+You can repeat the search process multiple times if necessary. The maximum number of search attempts is limited to 20.
+
+
+Once you have all the information you need, continue your reasoning.
+
+
+Example:
+
+Question: "Alice David is the voice of Lara Croft in a video game developed by which company?"
+
+Assistant thinking steps:
+
+- I need to find out who voices Lara Croft in the video game.
+
+- Then, I need to determine which company developed that video game.
+
+
+Assistant:
+
+<|begin_search_query|>Alice David Lara Croft voice<|end_search_query|>
+
+
+(System returns processed information from relevant web pages)
+
+
+Assistant thinks: The search results indicate that Alice David is the voice of Lara Croft in a specific video game. Now, I need to find out which company developed that game.
+
+
+Assistant:
+
+<|begin_search_query|>video game developed by Alice David Lara Croft<|end_search_query|>
+
+
+(System returns processed information from relevant web pages)
+
+
+Assistant continues reasoning with the new information...
+
+
+
+
+Remember:
+
+- Use <|begin_search_query|> to request a web search and end with <|end_search_query|>.
+
+- You may also put a search query if the question being asked is about events in future, or, not in training data due to knowledge cut off
+
+- You may also put a search query if the question requires real time information and up-to-date data
+
+- If the information is enough from the search results, there is no need to give any search query.
+
+- When done searching, continue your reasoning.
+
+        """
+        
+
     )
 
 def get_timeline_search_o1_instruction(MAX_SEARCH_LIMIT):
@@ -323,25 +367,14 @@ def get_naive_rag_instruction(question, documents):
 
 
 def get_task_instruction_openqa(question, model_name=None):
-    if model_name == 'qwq':
-        user_prompt = (
-            'Please answer the following question. '
-            'You should provide your final answer in the format \\boxed{YOUR_ANSWER}.\n\n'
-            f'Question:\n{question}\n\n'
-        )
-    elif model_name == 'dpsk':
-        user_prompt = (
-            'Please answer the following question.\n\n'
-            'Provide your final answer in the format **ANSWER: {YOUR_ANSWER}**.\n\n'
-            f'Question:\n{question}\n\n'
-        )
-    else:
-        user_prompt = (
-            'Please answer the following question. You should think step by step to solve it.\n\n'
-            'Provide your final answer in the format \\boxed{YOUR_ANSWER}.\n\n'
-            f'Question:\n{question}\n\n'
-        )
+    user_prompt = (
+        "Please answer the following question. You should think step by step to solve it.\n" +
+        'Provide your final answer in the format \\boxed{YOUR_ANSWER}.\n' +
+        'Question:\n\n' + 
+        question
+    )
     return user_prompt
+
 
 def get_task_instruction_math(question, model_name=None):
     if model_name == 'qwq':

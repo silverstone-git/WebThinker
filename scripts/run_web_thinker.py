@@ -16,8 +16,10 @@ import aiohttp
 from openai import AsyncOpenAI
 
 from search.bing_search import (
-    bing_web_search, 
+    bing_web_search,
+    duckduckgo_lite_search, 
     extract_relevant_info, 
+    extract_relevant_info_ddg, 
     fetch_page_content, 
     fetch_page_content_async,
     extract_snippet_with_context,
@@ -38,7 +40,6 @@ from prompts.prompts import (
     get_code_search_o1_instruction, 
     get_singleqa_search_o1_instruction, 
     get_multiqa_search_o1_instruction, 
-    get_deepseek_multiqa_search_o1_instruction,
     get_task_instruction_openqa, 
     get_task_instruction_math, 
     get_task_instruction_multi_choice, 
@@ -53,6 +54,7 @@ from transformers import AutoTokenizer
 
 # Define special tokens
 BEGIN_SEARCH_QUERY = "<|begin_search_query|>"
+BEGIN_SEARCH_QUERY_TEXT = "begin_search_query"
 END_SEARCH_QUERY = "<|end_search_query|>"
 BEGIN_SEARCH_RESULT = "<|begin_search_result|>"
 END_SEARCH_RESULT = "<|end_search_result|>"
@@ -107,7 +109,7 @@ def parse_args():
     parser.add_argument('--keep_links', action='store_true', default=False, help="Whether to keep links in fetched web content")
     parser.add_argument('--use_jina', action='store_true', help="Whether to use Jina API for document fetching.")
     parser.add_argument('--jina_api_key', type=str, default='None', help="Your Jina API Key to Fetch URL Content.")
-    parser.add_argument('--bing_subscription_key', type=str, required=True, help="Bing Search API subscription key.")
+    parser.add_argument('--bing_subscription_key', type=str, required=False, help="Bing Search API subscription key.")
     parser.add_argument('--bing_endpoint', type=str, default="https://api.bing.microsoft.com/v7.0/search", help="Bing Search API endpoint.")
     parser.add_argument('--eval', action='store_true', help="Whether to run evaluation after generation.")
     parser.add_argument('--seed', type=int, default=None, help="Random seed for generation. If not set, will use current timestamp as seed.")
@@ -143,6 +145,7 @@ def extract_between(text, start_marker, end_marker):
         print(f"---Error:---\n{str(e)}")
         print(f"-------------------")
         return None
+
 
 def format_search_results(relevant_info: List[Dict]) -> str:
     """Format search results into a readable string"""
@@ -180,34 +183,60 @@ async def generate_response(
     for attempt in range(retry_limit):
         try:
             async with semaphore:
-                if generate_mode == "chat":
-                    messages = [{"role": "user", "content": prompt}]
-                    if 'qwq' in model_name.lower() or 'deepseek' in model_name.lower() or 'r1' in model_name.lower():
-                        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    else:
-                        formatted_prompt = aux_tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    if ('deepseek' in model_name.lower() or 'r1' in model_name.lower()) and "<think>\n" not in formatted_prompt:
-                        formatted_prompt = formatted_prompt + "<think>\n"
-                else:
-                    formatted_prompt = prompt
+                formatted_prompt = prompt
 
-                response = await client.completions.create(
-                    model=model_name,
-                    prompt=formatted_prompt,
+                # print("formatted prompt is:: ", formatted_prompt)
+                print("model name :: ", model_name)
+
+                # response = await client.completions.create(
+                #     model=model_name,
+                #     prompt=formatted_prompt,
+                #     temperature=temperature,
+                #     top_p=top_p,
+                #     max_tokens=max_tokens,
+                #     stop=stop,
+                #     extra_body={
+                #         'top_k': top_k,
+                #         'include_stop_str_in_output': True,
+                #         'repetition_penalty': repetition_penalty,
+                #         # 'bad_words': bad_words,
+                #         # 'min_p': min_p
+                #     },
+                #     timeout=3600,
+                # )
+                response = await client.chat.completions.create(
+                    model= model_name,
+                    messages=[
+                        # {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": formatted_prompt}
+                    ],
                     temperature=temperature,
-                    top_p=top_p,
-                    max_tokens=max_tokens,
-                    stop=stop,
-                    extra_body={
-                        'top_k': top_k,
-                        'include_stop_str_in_output': True,
-                        'repetition_penalty': repetition_penalty,
+                    top_p= top_p,
+                    max_tokens= max_tokens,
+                    stop= stop,
+                    # extra_body={
+                        # 'include_stop_str_in_output': True,
+                        # 'repetition_penalty': repetition_penalty,
                         # 'bad_words': bad_words,
                         # 'min_p': min_p
-                    },
+                    # },
                     timeout=3600,
                 )
-                return formatted_prompt, response.choices[0].text
+
+                content= response.choices[0].message.content
+
+                if content is not None:
+                    if BEGIN_SEARCH_QUERY_TEXT in content:
+                        content += END_SEARCH_QUERY
+                    print("returning LLM output:")
+                    # print(content[:100] + "   ...    " + content[-100:])
+                    print(content)
+                    return formatted_prompt, content
+                else:
+                    return formatted_prompt, 'The Response from LLM was None'
+
+
+
         except Exception as e:
             print(f"Generate Response Error occurred: {e}, Starting retry attempt {attempt + 1}")
             # print(prompt)
@@ -279,6 +308,7 @@ async def generate_deep_web_explorer(
 
         # Check for search query
         if response.rstrip().endswith(END_SEARCH_QUERY):
+            print("extractor at the deep web explorer just ran, it got an end marker in the response")
             new_query = extract_between(response, BEGIN_SEARCH_QUERY, END_SEARCH_QUERY)
             total_interactions += 1
             if new_query is None or END_SEARCH_QUERY in new_query or len(new_query) <= 5 or new_query in invalid_search_queries:
@@ -300,14 +330,17 @@ async def generate_deep_web_explorer(
                 else:
                     try:
                         # results = bing_web_search(new_query, args.bing_subscription_key, args.bing_endpoint)
-                        results = await bing_web_search_async(new_query, args.bing_subscription_key, args.bing_endpoint)
+                        # results = await bing_web_search_async(new_query, args.bing_subscription_key, args.bing_endpoint)
+                        results = duckduckgo_lite_search(new_query)
+                        print("\n\n\n\nresults of the search ", new_query, "are: ")
+                        print(results)
                         search_cache[new_query] = results
                     except Exception as e:
                         print(f"Error during search query '{new_query}': {e}")
                         results = {}
                 print('- Searched for:', new_query)
 
-                relevant_info = extract_relevant_info(results)[:args.top_k]
+                relevant_info = extract_relevant_info_ddg(results)[:args.top_k]
 
                 formatted_documents = format_search_results(relevant_info)
                 
@@ -319,6 +352,7 @@ async def generate_deep_web_explorer(
                 
         # Check for click link
         elif response.rstrip().endswith(END_CLICK_LINK):
+            print("extractor at the deep web explorer just ran, it got an end click link in the response")
             url = extract_between(response, BEGIN_CLICK_LINK, END_CLICK_LINK)
             # click_intent = extract_between(response, BEGIN_CLICK_INTENT, END_CLICK_INTENT)
             total_interactions += 1
@@ -456,9 +490,11 @@ async def process_single_sequence(
     while not seq['finished']:
         # Check if sequence is finished
         if not seq['output'].rstrip().endswith(END_SEARCH_QUERY):
+            print("response didnt end with end marker in single sequence processor, breaking..")
             seq['finished'] = True
             break
         
+        print("extractor being called in single sequence processor")
         search_query = extract_between(response, BEGIN_SEARCH_QUERY, END_SEARCH_QUERY)
         seq['search_count'] += 1
 
@@ -483,20 +519,29 @@ async def process_single_sequence(
                 semaphore=semaphore,
             )
 
+            # print("search cache is: ", search_cache)
+
             # 执行搜索和后续操作（同原逻辑）
             if search_query in search_cache:
                 results = search_cache[search_query]
             else:
                 try:
                     # results = bing_web_search(search_query, args.bing_subscription_key, args.bing_endpoint)
-                    results = await bing_web_search_async(search_query, args.bing_subscription_key, args.bing_endpoint)
+                    # results = await bing_web_search_async(search_query, args.bing_subscription_key, args.bing_endpoint)
+                    print("searching the query after getting the search intent")
+                    results = duckduckgo_lite_search(search_query)
+                    print("results are: ")
+                    print(results)
                     search_cache[search_query] = results
                 except Exception as e:
                     print(f"Error during search query '{search_query}': {e}")
                     results = {}
             print(f'Searched for: "{search_query}"')
 
-            relevant_info = extract_relevant_info(results)[:args.top_k]
+            relevant_info = extract_relevant_info_ddg(results)[:args.top_k]
+
+            print("relevant info extracted: ")
+            print(relevant_info)
 
             # Process documents
             urls_to_fetch = []
